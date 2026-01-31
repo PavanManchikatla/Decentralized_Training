@@ -1,3 +1,3 @@
 # Decentralized_Training
 
-New Project to Implement decentralization if LLMs Training
+New Project to Implement decentralization of LLMs Training
