@@ -1,0 +1,29 @@
+from enum import StrEnum
+
+
+class NodeStatus(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    ONLINE = "ONLINE"
+    OFFLINE = "OFFLINE"
+    DEGRADED = "DEGRADED"
+
+
+class TaskType(StrEnum):
+    INFERENCE = "INFERENCE"
+    EMBEDDINGS = "EMBEDDINGS"
+    PREPROCESS = "PREPROCESS"
+
+
+class JobStatus(StrEnum):
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class RolePreference(StrEnum):
+    AUTO = "AUTO"
+    PREFER_INFERENCE = "PREFER_INFERENCE"
+    PREFER_EMBEDDINGS = "PREFER_EMBEDDINGS"
+    PREFER_PREPROCESS = "PREFER_PREPROCESS"
