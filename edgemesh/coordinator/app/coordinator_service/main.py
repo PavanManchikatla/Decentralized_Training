@@ -15,9 +15,11 @@ from api.routers import (
     cluster_router,
     health_router,
     jobs_router,
+    metrics_router,
     nodes_router,
     simulate_router,
     stream_router,
+    tasks_router,
 )
 from api.services import (
     heartbeat_agent_v1,
@@ -25,7 +27,7 @@ from api.services import (
     to_v1_heartbeat_from_legacy,
     to_v1_register_from_legacy,
 )
-from api.tasks import stale_node_monitor
+from api.tasks import stale_node_monitor, stale_task_monitor
 from coordinator_service.logging_config import configure_logging
 from coordinator_service.models import AgentRegisterRequest, AgentView, HeartbeatRequest
 from coordinator_service.settings import Settings
@@ -37,8 +39,9 @@ settings = Settings.from_env()
 configure_logging(settings.log_level)
 logger = logging.getLogger("coordinator")
 
-app = FastAPI(title="edgemesh coordinator", version="0.1.0")
+app = FastAPI(title="edgemesh coordinator", version="0.2.0")
 _stale_monitor_task: asyncio.Task[None] | None = None
+_stale_task_monitor_task: asyncio.Task[None] | None = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,17 +55,22 @@ app.include_router(health_router)
 app.include_router(nodes_router)
 app.include_router(stream_router)
 app.include_router(agent_router)
+app.include_router(tasks_router)
 app.include_router(cluster_router)
+app.include_router(metrics_router)
 app.include_router(simulate_router)
 app.include_router(jobs_router)
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    global _stale_monitor_task
+    global _stale_monitor_task, _stale_task_monitor_task
     init_repository(settings.db_url)
     _stale_monitor_task = asyncio.create_task(
         stale_node_monitor(settings.node_stale_seconds)
+    )
+    _stale_task_monitor_task = asyncio.create_task(
+        stale_task_monitor(settings.task_recovery_interval_seconds)
     )
     logger.info(
         "repository_initialized",
@@ -70,6 +78,8 @@ async def startup() -> None:
             "db_url": settings.db_url,
             "node_stale_seconds": settings.node_stale_seconds,
             "offline_scan_interval_seconds": 5,
+            "task_lease_seconds": settings.task_lease_seconds,
+            "task_recovery_interval_seconds": settings.task_recovery_interval_seconds,
             "agent_secret_enabled": bool(settings.edge_mesh_shared_secret),
         },
     )
@@ -77,12 +87,19 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global _stale_monitor_task
+    global _stale_monitor_task, _stale_task_monitor_task
+
     if _stale_monitor_task is not None:
         _stale_monitor_task.cancel()
         with suppress(asyncio.CancelledError):
             await _stale_monitor_task
         _stale_monitor_task = None
+
+    if _stale_task_monitor_task is not None:
+        _stale_task_monitor_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _stale_task_monitor_task
+        _stale_task_monitor_task = None
 
 
 @app.post("/api/agents/register", status_code=status.HTTP_201_CREATED)

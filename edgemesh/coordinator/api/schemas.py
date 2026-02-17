@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, model_validator
 
-from models import Job, JobStatus, TaskType
+from models import Job, JobStatus, Task, TaskType
 
 
 class AgentCapabilitiesPayload(BaseModel):
@@ -74,6 +74,9 @@ class ClusterSummaryResponse(BaseModel):
 class JobCreateRequest(BaseModel):
     task_type: str = Field(min_length=1, max_length=64)
     payload_ref: str | None = Field(default=None, max_length=512)
+    task_count: int = Field(default=1, ge=1, le=500)
+    payload_items: list[str] | None = None
+    max_task_retries: int = Field(default=2, ge=0, le=20)
 
 
 class JobStatusUpdateRequest(BaseModel):
@@ -89,3 +92,32 @@ class DemoJobBurstResponse(BaseModel):
     completed_count: int
     failed_count: int
     jobs: list[Job] = Field(default_factory=list)
+
+
+class TaskPullRequest(BaseModel):
+    node_id: str = Field(min_length=1, max_length=128)
+
+
+class TaskPullResponse(BaseModel):
+    task: Task | None = None
+
+
+class TaskResultSubmitRequest(BaseModel):
+    node_id: str = Field(min_length=1, max_length=128)
+    success: bool
+    output: dict[str, object] | None = None
+    duration_ms: int = Field(ge=0)
+
+
+class TaskResultSubmitResponse(BaseModel):
+    task: Task
+    job: Job
+
+
+class ExecutionMetricsResponse(BaseModel):
+    total_results: int
+    success_results: int
+    failed_results: int
+    avg_duration_ms: float | None = None
+    throughput_tasks_per_minute: float
+    node_reliability: dict[str, float] = Field(default_factory=dict)

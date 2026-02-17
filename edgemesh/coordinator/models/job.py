@@ -21,3 +21,22 @@ class Job(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     error: str | None = Field(default=None, max_length=2048)
+
+    total_tasks: int = Field(default=0, ge=0)
+    queued_tasks: int = Field(default=0, ge=0)
+    running_tasks: int = Field(default=0, ge=0)
+    completed_tasks: int = Field(default=0, ge=0)
+    failed_tasks: int = Field(default=0, ge=0)
+    total_retries: int = Field(default=0, ge=0)
+    assigned_nodes: list[str] = Field(default_factory=list)
+    avg_task_duration_ms: float | None = Field(default=None, ge=0)
+    throughput_tasks_per_minute: float | None = Field(default=None, ge=0)
+
+
+class JobUpdateEvent(BaseModel):
+    job_id: str
+    status: JobStatus
+    total_tasks: int
+    completed_tasks: int
+    failed_tasks: int
+    updated_at: datetime = Field(default_factory=_utc_now)

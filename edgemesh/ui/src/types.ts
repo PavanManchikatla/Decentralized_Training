@@ -11,6 +11,7 @@ export type JobStatus =
   | 'COMPLETED'
   | 'FAILED'
   | 'CANCELLED'
+export type TaskStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED'
 export type RolePreference =
   | 'AUTO'
   | 'PREFER_INFERENCE'
@@ -98,6 +99,32 @@ export type Job = {
   payload_ref: string | null
   assigned_node_id: string | null
   attempts: number
+  created_at: string
+  updated_at: string
+  started_at: string | null
+  completed_at: string | null
+  error: string | null
+  total_tasks: number
+  queued_tasks: number
+  running_tasks: number
+  completed_tasks: number
+  failed_tasks: number
+  total_retries: number
+  assigned_nodes: string[]
+  avg_task_duration_ms: number | null
+  throughput_tasks_per_minute: number | null
+}
+
+export type Task = {
+  id: string
+  job_id: string
+  type: TaskType
+  payload: Record<string, unknown>
+  status: TaskStatus
+  assigned_node_id: string | null
+  retries: number
+  max_retries: number
+  lease_expires_at: string | null
   created_at: string
   updated_at: string
   started_at: string | null

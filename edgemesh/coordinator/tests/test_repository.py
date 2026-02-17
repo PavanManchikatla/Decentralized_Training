@@ -8,6 +8,8 @@ from models import (
     NodeMetrics,
     NodePolicy,
     NodeStatus,
+    TaskResult,
+    TaskStatus,
     TaskType,
 )
 
@@ -111,5 +113,67 @@ def test_repository_job_crud_and_transitions(tmp_path) -> None:
     rows = repo.list_jobs(status=JobStatus.COMPLETED)
     assert len(rows) == 1
     assert rows[0].id == "job-1"
+
+    repo.close()
+
+
+def test_repository_task_lifecycle_and_metrics(tmp_path) -> None:
+    db_path = tmp_path / "task-test.db"
+    repo = CoordinatorRepository(f"sqlite:///{db_path}")
+
+    repo.upsert_node_identity(
+        node_id="worker-1",
+        display_name="Worker 1",
+        ip="127.0.0.1",
+        port=9100,
+    )
+    repo.upsert_node_capabilities(
+        node_id="worker-1",
+        capabilities=NodeCapabilities(
+            task_types=[TaskType.EMBEDDINGS, TaskType.TOKENIZE],
+            labels=["cpu"],
+            has_gpu=False,
+            cpu_threads=8,
+            ram_total_gb=16,
+        ),
+    )
+    repo.update_node_metrics(
+        node_id="worker-1",
+        metrics=NodeMetrics(cpu_percent=10, ram_percent=20, running_jobs=0),
+    )
+
+    job = repo.create_job(
+        Job(
+            id="job-task-1",
+            type=TaskType.EMBEDDINGS,
+            payload_ref="demo://repo-task",
+        )
+    )
+
+    tasks = repo.create_tasks(
+        job_id=job.id,
+        task_type=TaskType.EMBEDDINGS,
+        payloads=[{"text": "a"}, {"text": "b"}],
+        max_retries=1,
+    )
+    assert len(tasks) == 2
+
+    pulled = repo.pull_task_for_node("worker-1", lease_seconds=30)
+    assert pulled is not None
+
+    task_after, job_after = repo.submit_task_result(
+        TaskResult(
+            task_id=pulled.id,
+            node_id="worker-1",
+            success=True,
+            output={"ok": True},
+            duration_ms=123,
+        )
+    )
+    assert task_after.status == TaskStatus.COMPLETED
+    assert job_after.completed_tasks == 1
+
+    metrics = repo.get_execution_metrics()
+    assert metrics["success_results"] >= 1
 
     repo.close()

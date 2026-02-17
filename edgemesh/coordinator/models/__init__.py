@@ -1,5 +1,5 @@
-from models.enums import JobStatus, NodeStatus, RolePreference, TaskType
-from models.job import Job
+from models.enums import JobStatus, NodeStatus, RolePreference, TaskStatus, TaskType
+from models.job import Job, JobUpdateEvent
 from models.node import (
     Node,
     NodeCapabilities,
@@ -9,10 +9,12 @@ from models.node import (
     NodePolicy,
     NodeUpdateEvent,
 )
+from models.task import Task, TaskResult
 
 __all__ = [
     "Job",
     "JobStatus",
+    "JobUpdateEvent",
     "Node",
     "NodeCapabilities",
     "NodeDetail",
@@ -22,5 +24,8 @@ __all__ = [
     "NodeStatus",
     "NodeUpdateEvent",
     "RolePreference",
+    "Task",
+    "TaskResult",
+    "TaskStatus",
     "TaskType",
 ]

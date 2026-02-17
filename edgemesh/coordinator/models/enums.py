@@ -24,6 +24,13 @@ class JobStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class TaskStatus(StrEnum):
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
 class RolePreference(StrEnum):
     AUTO = "AUTO"
     PREFER_INFERENCE = "PREFER_INFERENCE"

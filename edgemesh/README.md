@@ -2,8 +2,8 @@
 
 `edgemesh` is a monorepo with three services:
 
-- `coordinator/`: FastAPI coordinator API with SQLite persistence, jobs APIs, SSE streaming, and scheduling simulation.
-- `agent/`: Python edge agent that registers capabilities and sends heartbeats.
+- `coordinator/`: FastAPI coordinator API with SQLite persistence, distributed task execution, scheduling simulation, and SSE streams.
+- `agent/`: Python edge agent that registers capabilities, sends heartbeats, pulls tasks, executes them locally, and reports results.
 - `ui/`: React + Vite dashboard.
 
 ## Prerequisites
@@ -58,6 +58,10 @@ make agent-dev
 make ui-dev
 ```
 
+## Architecture
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for topology, flow diagrams, and module map.
+
 ## Serve Built UI from Coordinator
 
 ```bash
@@ -71,7 +75,7 @@ Then open [http://localhost:8000](http://localhost:8000). Coordinator serves `ui
 
 ## Security Model (MVP)
 
-- Agent-to-coordinator endpoints (`/v1/agent/register`, `/v1/agent/heartbeat`, and legacy `/api/agents/*`) require the shared secret when `EDGE_MESH_SHARED_SECRET` is set.
+- Agent-to-coordinator endpoints (`/v1/agent/register`, `/v1/agent/heartbeat`, `/v1/tasks/*`, and legacy `/api/agents/*`) require the shared secret when `EDGE_MESH_SHARED_SECRET` is set.
 - Agent sends `X-EdgeMesh-Secret: <EDGE_MESH_SHARED_SECRET>`.
 - UI endpoints remain unauthenticated for local development.
 - This is local-only MVP auth and is not a replacement for full user/session auth.
@@ -86,14 +90,18 @@ Then open [http://localhost:8000](http://localhost:8000). Coordinator serves `ui
 - `GET /v1/cluster/summary`
 - `POST /v1/agent/register`
 - `POST /v1/agent/heartbeat`
+- `POST /v1/tasks/pull`
+- `POST /v1/tasks/{task_id}/result`
+- `GET /v1/metrics/execution`
 - `POST /v1/simulate/schedule`
 - `POST /v1/jobs`
 - `GET /v1/jobs`
 - `GET /v1/jobs/{job_id}`
+- `GET /v1/jobs/{job_id}/tasks`
 - `POST /v1/jobs/{job_id}/status`
 - `POST /v1/demo/jobs/create-embed-burst?count=20`
 
-## Quick Verification
+## Quick Verification (Phase 1.5)
 
 1. Health:
 
@@ -101,32 +109,34 @@ Then open [http://localhost:8000](http://localhost:8000). Coordinator serves `ui
 curl http://localhost:8000/health
 ```
 
-2. Start SSE stream:
+2. Submit distributed demo jobs:
 
 ```bash
-curl -N http://localhost:8000/v1/stream/nodes
+curl -X POST "http://localhost:8000/v1/demo/jobs/create-embed-burst?count=20&tasks_per_job=6"
 ```
 
-3. Create demo jobs:
-
-```bash
-curl -X POST "http://localhost:8000/v1/demo/jobs/create-embed-burst?count=20"
-```
-
-4. List jobs:
+3. Watch jobs/tasks progress while agent is running:
 
 ```bash
 curl http://localhost:8000/v1/jobs
+curl http://localhost:8000/v1/jobs/<job_id>/tasks
+```
+
+4. Execution metrics:
+
+```bash
+curl http://localhost:8000/v1/metrics/execution
 ```
 
 5. Secret check (should be 401 when secret is configured):
 
 ```bash
-curl -X POST http://localhost:8000/v1/agent/register -H 'content-type: application/json' -d '{}'
+curl -X POST http://localhost:8000/v1/tasks/pull -H 'content-type: application/json' -d '{"node_id":"n1"}'
 ```
 
 ## Notes
 
 - `NODE_STALE_SECONDS` defaults to `15`; stale scan runs every `5` seconds.
+- `TASK_LEASE_SECONDS` defaults to `30`; stale task recovery runs every `3` seconds.
 - Agent persists node identity in `agent/state/node_id.txt`.
 - Scheduler eligibility is policy-driven; lowering caps immediately affects simulation results and cluster summary totals.

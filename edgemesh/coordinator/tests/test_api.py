@@ -390,3 +390,142 @@ def test_demo_embed_burst_populates_jobs(client: TestClient) -> None:
     list_response = client.get("/v1/jobs")
     assert list_response.status_code == 200
     assert len(list_response.json()) == 6
+
+
+def test_tasks_pull_submit_and_job_completion(client: TestClient) -> None:
+    _register_agent_v1(client, node_id="worker-a", has_gpu=False)
+    _heartbeat_agent_v1(client, node_id="worker-a", cpu_percent=9.0)
+
+    created = client.post(
+        "/v1/jobs",
+        json={
+            "task_type": "EMBED",
+            "payload_ref": "demo://phase15/job-1",
+            "task_count": 2,
+            "max_task_retries": 1,
+        },
+    )
+    assert created.status_code == 201
+    job_id = created.json()["id"]
+    assert created.json()["total_tasks"] == 2
+
+    pull_one = client.post(
+        "/v1/tasks/pull",
+        headers=_agent_headers(),
+        json={"node_id": "worker-a"},
+    )
+    assert pull_one.status_code == 200
+    task_one = pull_one.json()["task"]
+    assert task_one is not None
+
+    result_one = client.post(
+        f"/v1/tasks/{task_one['id']}/result",
+        headers=_agent_headers(),
+        json={
+            "node_id": "worker-a",
+            "success": True,
+            "output": {"items_processed": 1},
+            "duration_ms": 120,
+        },
+    )
+    assert result_one.status_code == 200
+
+    pull_two = client.post(
+        "/v1/tasks/pull",
+        headers=_agent_headers(),
+        json={"node_id": "worker-a"},
+    )
+    assert pull_two.status_code == 200
+    task_two = pull_two.json()["task"]
+    assert task_two is not None
+
+    result_two = client.post(
+        f"/v1/tasks/{task_two['id']}/result",
+        headers=_agent_headers(),
+        json={
+            "node_id": "worker-a",
+            "success": True,
+            "output": {"items_processed": 1},
+            "duration_ms": 160,
+        },
+    )
+    assert result_two.status_code == 200
+
+    job_detail = client.get(f"/v1/jobs/{job_id}")
+    assert job_detail.status_code == 200
+    payload = job_detail.json()
+    assert payload["status"] == "COMPLETED"
+    assert payload["completed_tasks"] == 2
+
+    metrics = client.get("/v1/metrics/execution")
+    assert metrics.status_code == 200
+    metrics_payload = metrics.json()
+    assert metrics_payload["success_results"] >= 2
+
+
+def test_task_retry_and_reassignment(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TASK_LEASE_SECONDS", "1")
+
+    _register_agent_v1(client, node_id="worker-1", has_gpu=False)
+    _register_agent_v1(client, node_id="worker-2", has_gpu=False)
+    _heartbeat_agent_v1(client, node_id="worker-1", cpu_percent=8.0)
+    _heartbeat_agent_v1(client, node_id="worker-2", cpu_percent=8.0)
+
+    created = client.post(
+        "/v1/jobs",
+        json={
+            "task_type": "TOKENIZE",
+            "payload_ref": "demo://phase15/reassign",
+            "task_count": 1,
+            "max_task_retries": 1,
+        },
+    )
+    assert created.status_code == 201
+    job_id = created.json()["id"]
+
+    first_pull = client.post(
+        "/v1/tasks/pull",
+        headers=_agent_headers(),
+        json={"node_id": "worker-1"},
+    )
+    assert first_pull.status_code == 200
+    first_task = first_pull.json()["task"]
+    assert first_task is not None
+
+    import time
+
+    time.sleep(1.2)
+
+    second_pull = client.post(
+        "/v1/tasks/pull",
+        headers=_agent_headers(),
+        json={"node_id": "worker-2"},
+    )
+    assert second_pull.status_code == 200
+    reassigned = second_pull.json()["task"]
+    assert reassigned is not None
+    assert reassigned["id"] == first_task["id"]
+    assert reassigned["retries"] == 1
+
+    failed_result = client.post(
+        f"/v1/tasks/{reassigned['id']}/result",
+        headers=_agent_headers(),
+        json={
+            "node_id": "worker-2",
+            "success": False,
+            "output": {"error": "simulated"},
+            "duration_ms": 75,
+        },
+    )
+    assert failed_result.status_code == 200
+
+    job_detail = client.get(f"/v1/jobs/{job_id}")
+    assert job_detail.status_code == 200
+    assert job_detail.json()["failed_tasks"] == 1
+
+
+def test_tasks_pull_requires_secret(client: TestClient) -> None:
+    response = client.post("/v1/tasks/pull", json={"node_id": "node-missing-secret"})
+    assert response.status_code == 401

@@ -34,3 +34,19 @@ def test_build_heartbeat_payload_shape() -> None:
     assert "ram_used_gb" in metrics
     assert "ram_percent" in metrics
     assert "running_jobs" in metrics
+
+
+def test_execute_task_generates_embedding_shape() -> None:
+    from agent_service.main import _execute_task
+
+    result = _execute_task(
+        {
+            "id": "task-1",
+            "type": "EMBEDDINGS",
+            "payload": {"text": "hello world"},
+        }
+    )
+
+    assert "embedding" in result
+    assert isinstance(result["embedding"], list)
+    assert result["dims"] == len(result["embedding"])

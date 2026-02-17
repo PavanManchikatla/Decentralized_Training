@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { createDemoEmbedBurst, getJobs } from '../api/edgemesh'
-import type { Job, JobStatus, TaskType } from '../types'
+import {
+  createDemoEmbedBurst,
+  getJobs,
+  getJobTasks,
+  openJobsStream,
+} from '../api/edgemesh'
+import type { Job, JobStatus, Task, TaskType } from '../types'
 
 const STATUS_OPTIONS: Array<JobStatus | 'ALL'> = [
   'ALL',
@@ -42,6 +47,13 @@ function formatTimestamp(value: string): string {
   return date.toLocaleTimeString()
 }
 
+function progressPercent(job: Job): number {
+  if (job.total_tasks <= 0) {
+    return 0
+  }
+  return Math.round((job.completed_tasks / job.total_tasks) * 100)
+}
+
 export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(true)
@@ -49,6 +61,8 @@ export default function JobsPage() {
   const [statusFilter, setStatusFilter] = useState<JobStatus | 'ALL'>('ALL')
   const [taskFilter, setTaskFilter] = useState<TaskType | 'ALL'>('ALL')
   const [busy, setBusy] = useState(false)
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
+  const [selectedJobTasks, setSelectedJobTasks] = useState<Task[]>([])
 
   useEffect(() => {
     let active = true
@@ -77,15 +91,57 @@ export default function JobsPage() {
     }
 
     void load()
+
+    const stream = openJobsStream(
+      () => {
+        void load()
+      },
+      () => {
+        // polling below remains the fallback and baseline refresh path
+      }
+    )
+
     const id = window.setInterval(() => {
       void load()
     }, 5000)
 
     return () => {
       active = false
+      stream.close()
       window.clearInterval(id)
     }
   }, [statusFilter, taskFilter])
+
+  useEffect(() => {
+    if (!selectedJobId) {
+      setSelectedJobTasks([])
+      return
+    }
+
+    let active = true
+    const loadTasks = async () => {
+      try {
+        const payload = await getJobTasks(selectedJobId)
+        if (active) {
+          setSelectedJobTasks(payload)
+        }
+      } catch {
+        if (active) {
+          setSelectedJobTasks([])
+        }
+      }
+    }
+
+    void loadTasks()
+    const id = window.setInterval(() => {
+      void loadTasks()
+    }, 5000)
+
+    return () => {
+      active = false
+      window.clearInterval(id)
+    }
+  }, [selectedJobId])
 
   const sortedJobs = useMemo(
     () =>
@@ -99,7 +155,7 @@ export default function JobsPage() {
   const triggerDemoBurst = async () => {
     setBusy(true)
     try {
-      await createDemoEmbedBurst(20)
+      await createDemoEmbedBurst(20, 6)
       const payload = await getJobs({
         status: statusFilter,
         taskType: taskFilter,
@@ -173,29 +229,74 @@ export default function JobsPage() {
               <th>job_id</th>
               <th>task_type</th>
               <th>status</th>
-              <th>node</th>
+              <th>progress</th>
+              <th>nodes</th>
               <th>created_at</th>
               <th>duration</th>
-              <th>attempts</th>
+              <th>retries</th>
               <th>error</th>
             </tr>
           </thead>
           <tbody>
             {sortedJobs.map((job) => (
-              <tr key={job.id}>
+              <tr key={job.id} onClick={() => setSelectedJobId(job.id)}>
                 <td>{job.id}</td>
                 <td>{job.type}</td>
                 <td>{job.status}</td>
-                <td>{job.assigned_node_id ?? '-'}</td>
+                <td>
+                  {job.completed_tasks}/{job.total_tasks} (
+                  {progressPercent(job)}%)
+                </td>
+                <td>
+                  {job.assigned_nodes.length > 0
+                    ? job.assigned_nodes.join(', ')
+                    : '-'}
+                </td>
                 <td>{formatTimestamp(job.created_at)}</td>
                 <td>{formatDuration(job)}</td>
-                <td>{job.attempts}</td>
+                <td>{job.total_retries}</td>
                 <td>{job.error ?? '-'}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </section>
+
+      {selectedJobId && (
+        <section className="surface table-wrap">
+          <h2>Tasks for {selectedJobId}</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>task_id</th>
+                <th>status</th>
+                <th>node</th>
+                <th>retries</th>
+                <th>completed_at</th>
+                <th>error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {selectedJobTasks.map((task) => (
+                <tr key={task.id}>
+                  <td>{task.id}</td>
+                  <td>{task.status}</td>
+                  <td>{task.assigned_node_id ?? '-'}</td>
+                  <td>
+                    {task.retries}/{task.max_retries}
+                  </td>
+                  <td>
+                    {task.completed_at
+                      ? formatTimestamp(task.completed_at)
+                      : '-'}
+                  </td>
+                  <td>{task.error ?? '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
     </section>
   )
 }

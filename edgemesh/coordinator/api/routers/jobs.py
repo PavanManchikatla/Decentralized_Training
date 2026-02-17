@@ -1,13 +1,41 @@
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
 
 from api.schemas import DemoJobBurstResponse, JobCreateRequest, JobStatusUpdateRequest
-from db import create_job, get_job, get_nodes, list_jobs, transition_job_status
-from models import Job, JobStatus, TaskType
+from api.state import job_event_bus
+from db import (
+    assign_job,
+    create_job,
+    create_tasks,
+    get_job,
+    get_nodes,
+    list_jobs,
+    list_tasks,
+    transition_job_status,
+)
+from models import Job, JobStatus, JobUpdateEvent, Task, TaskType
 from scheduler import evaluate_node_eligibility, score_node
 
 router = APIRouter(prefix="/v1", tags=["jobs"])
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+async def _publish_job_update(job: Job) -> None:
+    await job_event_bus.publish(
+        JobUpdateEvent(
+            job_id=job.id,
+            status=job.status,
+            total_tasks=job.total_tasks,
+            completed_tasks=job.completed_tasks,
+            failed_tasks=job.failed_tasks,
+            updated_at=job.updated_at,
+        )
+    )
 
 
 def _parse_task_type(raw: str) -> TaskType:
@@ -59,6 +87,30 @@ def _pick_node_for_task(task_type: TaskType) -> str | None:
     return chosen[0] if chosen is not None else None
 
 
+def _build_task_payloads(
+    payload: JobCreateRequest, task_type: TaskType
+) -> list[dict[str, object]]:
+    if payload.payload_items:
+        return [
+            {
+                "task_index": index,
+                "task_type": task_type.value,
+                "item": item,
+                "payload_ref": payload.payload_ref,
+            }
+            for index, item in enumerate(payload.payload_items)
+        ]
+
+    return [
+        {
+            "task_index": index,
+            "task_type": task_type.value,
+            "payload_ref": payload.payload_ref,
+        }
+        for index in range(payload.task_count)
+    ]
+
+
 @router.post("/jobs", response_model=Job, status_code=status.HTTP_201_CREATED)
 async def create_job_route(
     payload: JobCreateRequest = Body(
@@ -69,27 +121,41 @@ async def create_job_route(
                 "value": {
                     "task_type": "EMBED",
                     "payload_ref": "s3://bucket/chunk-001.json",
+                    "task_count": 8,
+                    "max_task_retries": 2,
                 },
             }
         },
     ),
 ) -> Job:
-    """Create a job in QUEUED state.
-
-    For Phase 1 this will also attempt a best-fit assignment using scheduler simulation.
-    """
+    """Create a distributed job and split it into executable tasks."""
 
     task_type = _parse_task_type(payload.task_type)
-    assigned_node_id = _pick_node_for_task(task_type)
 
-    job = Job(
-        id=f"job-{uuid.uuid4().hex[:12]}",
-        type=task_type,
-        status=JobStatus.QUEUED,
-        payload_ref=payload.payload_ref,
-        assigned_node_id=assigned_node_id,
+    job = create_job(
+        Job(
+            id=f"job-{uuid.uuid4().hex[:12]}",
+            type=task_type,
+            status=JobStatus.QUEUED,
+            payload_ref=payload.payload_ref,
+            updated_at=_utc_now(),
+        )
     )
-    return create_job(job)
+
+    task_payloads = _build_task_payloads(payload, task_type)
+    create_tasks(
+        job_id=job.id,
+        task_type=task_type,
+        payloads=task_payloads,
+        max_retries=payload.max_task_retries,
+    )
+
+    refreshed = get_job(job.id)
+    if refreshed is None:
+        raise HTTPException(status_code=500, detail="Failed to load created job")
+
+    await _publish_job_update(refreshed)
+    return refreshed
 
 
 @router.get("/jobs", response_model=list[Job])
@@ -119,6 +185,15 @@ async def get_job_route(job_id: str) -> Job:
     return job
 
 
+@router.get("/jobs/{job_id}/tasks", response_model=list[Task])
+async def list_job_tasks_route(job_id: str) -> list[Task]:
+    """List all tasks for a job including assignment/retry state."""
+
+    if get_job(job_id) is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    return list_tasks(job_id=job_id)
+
+
 @router.post("/jobs/{job_id}/status", response_model=Job)
 async def transition_job_status_route(
     job_id: str,
@@ -133,12 +208,14 @@ async def transition_job_status_route(
         },
     ),
 ) -> Job:
-    """Update job status using enforced transition path QUEUED -> RUNNING -> COMPLETED/FAILED."""
+    """Manual override for job status transition path QUEUED -> RUNNING -> COMPLETED/FAILED."""
 
     try:
-        return transition_job_status(
+        updated = transition_job_status(
             job_id=job_id, new_status=payload.status, error=payload.error
         )
+        await _publish_job_update(updated)
+        return updated
     except KeyError as exc:
         raise HTTPException(
             status_code=404, detail=f"Job '{job_id}' not found"
@@ -150,42 +227,49 @@ async def transition_job_status_route(
 @router.post("/demo/jobs/create-embed-burst", response_model=DemoJobBurstResponse)
 async def create_embed_burst(
     count: int = Query(default=20, ge=1, le=200),
+    tasks_per_job: int = Query(default=6, ge=1, le=64),
 ) -> DemoJobBurstResponse:
-    """Create a demo burst of EMBED jobs and assign using scheduler simulation.
-
-    This populates the jobs table with mixed statuses for dashboard demonstration.
-    """
+    """Create a burst of EMBED jobs split into tasks for distributed execution demo."""
 
     jobs: list[Job] = []
     assigned_count = 0
 
     for index in range(count):
-        assigned_node_id = _pick_node_for_task(TaskType.EMBEDDINGS)
-        if assigned_node_id is not None:
-            assigned_count += 1
-
         job = create_job(
             Job(
                 id=f"job-{uuid.uuid4().hex[:12]}",
                 type=TaskType.EMBEDDINGS,
                 status=JobStatus.QUEUED,
                 payload_ref=f"demo://embed/{index:04d}",
-                assigned_node_id=assigned_node_id,
+                updated_at=_utc_now(),
             )
         )
 
-        if assigned_node_id is not None and index % 5 == 0:
-            job = transition_job_status(job.id, JobStatus.RUNNING)
-            job = transition_job_status(job.id, JobStatus.COMPLETED)
-        elif assigned_node_id is not None and index % 7 == 0:
-            job = transition_job_status(job.id, JobStatus.RUNNING)
-            job = transition_job_status(
-                job.id, JobStatus.FAILED, error="Synthetic demo failure"
-            )
-        elif assigned_node_id is not None and index % 2 == 0:
-            job = transition_job_status(job.id, JobStatus.RUNNING)
+        payloads = [
+            {
+                "task_index": task_index,
+                "task_type": TaskType.EMBEDDINGS.value,
+                "payload_ref": job.payload_ref,
+                "text": f"demo chunk {index:04d}-{task_index:02d}",
+            }
+            for task_index in range(tasks_per_job)
+        ]
+        create_tasks(
+            job_id=job.id,
+            task_type=TaskType.EMBEDDINGS,
+            payloads=payloads,
+            max_retries=2,
+        )
 
-        jobs.append(job)
+        assigned_node_id = _pick_node_for_task(TaskType.EMBEDDINGS)
+        if assigned_node_id is not None:
+            assigned_count += 1
+            assign_job(job.id, assigned_node_id)
+
+        refreshed = get_job(job.id)
+        if refreshed is not None:
+            jobs.append(refreshed)
+            await _publish_job_update(refreshed)
 
     queued_count = sum(1 for item in jobs if item.status == JobStatus.QUEUED)
     running_count = sum(1 for item in jobs if item.status == JobStatus.RUNNING)

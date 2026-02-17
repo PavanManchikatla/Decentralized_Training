@@ -7,6 +7,7 @@ import type {
   NodeDetail,
   NodePolicy,
   NodeUpdateEvent,
+  Task,
   TaskType,
 } from '../types'
 
@@ -86,13 +87,37 @@ export async function getJobs(filters?: {
   return fetchJson<Job[]>(`/v1/jobs${suffix}`)
 }
 
+export async function getJobTasks(jobId: string): Promise<Task[]> {
+  return fetchJson<Task[]>(`/v1/jobs/${encodeURIComponent(jobId)}/tasks`)
+}
+
 export async function createDemoEmbedBurst(
-  count = 20
+  count = 20,
+  tasksPerJob = 6
 ): Promise<DemoJobBurstResponse> {
   return fetchJson<DemoJobBurstResponse>(
-    `/v1/demo/jobs/create-embed-burst?count=${encodeURIComponent(String(count))}`,
+    `/v1/demo/jobs/create-embed-burst?count=${encodeURIComponent(String(count))}&tasks_per_job=${encodeURIComponent(String(tasksPerJob))}`,
     { method: 'POST' }
   )
+}
+
+export function openJobsStream(
+  onEvent: (jobId: string) => void,
+  onError: () => void
+): EventSource {
+  const source = new EventSource(apiUrl('/v1/stream/jobs'))
+
+  source.addEventListener('job_update', (event) => {
+    const message = event as MessageEvent<string>
+    const payload = JSON.parse(message.data) as { job_id: string }
+    onEvent(payload.job_id)
+  })
+
+  source.onerror = () => {
+    onError()
+  }
+
+  return source
 }
 
 export function openNodesStream(

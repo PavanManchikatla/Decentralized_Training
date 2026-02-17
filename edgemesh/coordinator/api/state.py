@@ -3,7 +3,7 @@ from collections import defaultdict, deque
 from collections.abc import Iterable
 from threading import Lock
 
-from models import NodeMetrics, NodeUpdateEvent
+from models import JobUpdateEvent, NodeMetrics, NodeUpdateEvent
 
 
 class NodeEventBus:
@@ -25,6 +25,37 @@ class NodeEventBus:
     async def publish(self, event: NodeUpdateEvent) -> None:
         async with self._lock:
             subscribers: Iterable[asyncio.Queue[NodeUpdateEvent]] = tuple(
+                self._subscribers
+            )
+
+        for queue in subscribers:
+            if queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            queue.put_nowait(event)
+
+
+class JobEventBus:
+    def __init__(self, queue_size: int = 256) -> None:
+        self._queue_size = queue_size
+        self._subscribers: set[asyncio.Queue[JobUpdateEvent]] = set()
+        self._lock = asyncio.Lock()
+
+    async def subscribe(self) -> asyncio.Queue[JobUpdateEvent]:
+        queue: asyncio.Queue[JobUpdateEvent] = asyncio.Queue(maxsize=self._queue_size)
+        async with self._lock:
+            self._subscribers.add(queue)
+        return queue
+
+    async def unsubscribe(self, queue: asyncio.Queue[JobUpdateEvent]) -> None:
+        async with self._lock:
+            self._subscribers.discard(queue)
+
+    async def publish(self, event: JobUpdateEvent) -> None:
+        async with self._lock:
+            subscribers: Iterable[asyncio.Queue[JobUpdateEvent]] = tuple(
                 self._subscribers
             )
 
@@ -60,4 +91,5 @@ class MetricsHistoryBuffer:
 
 
 node_event_bus = NodeEventBus()
+job_event_bus = JobEventBus()
 metrics_history_buffer = MetricsHistoryBuffer()

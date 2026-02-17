@@ -1,3 +1,4 @@
+import hmac
 import os
 
 from fastapi import Header, HTTPException, status
@@ -12,7 +13,8 @@ def require_agent_secret(
     if not expected:
         return
 
-    if x_edgemesh_secret != expected:
+    provided = (x_edgemesh_secret or "").strip()
+    if not hmac.compare_digest(provided, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing shared secret",
